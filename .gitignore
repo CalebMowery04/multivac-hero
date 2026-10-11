@@ -3,3 +3,7 @@ __pycache__/
 output/
 .env
 *.pyc
+
+web/node_modules/
+web/dist/
+server/multivac-server

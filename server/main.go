@@ -30,15 +30,18 @@ type Job struct {
 	Zip    string         `json:"-"`
 }
 type Request struct {
-	Audio      string `json:"audio"`
-	References string `json:"references"`
-	Output     string `json:"output"`
-	Result     string `json:"result"`
-	Title      string `json:"title"`
-	Artist     string `json:"artist"`
-	Seconds    int    `json:"seconds"`
-	Mode       string `json:"mode"`
-	Model      string `json:"model"`
+	Audio            string `json:"audio"`
+	References       string `json:"references"`
+	Output           string `json:"output"`
+	Result           string `json:"result"`
+	Title            string `json:"title"`
+	Artist           string `json:"artist"`
+	Seconds          int    `json:"seconds"`
+	Mode             string `json:"mode"`
+	Model            string `json:"model"`
+	ReferenceFolder  string `json:"reference_folder,omitempty"`
+	Stage            string `json:"stage,omitempty"`
+	ReferenceSeconds int    `json:"reference_seconds"`
 }
 type Runner func(context.Context, string) error
 type API struct {
@@ -65,6 +68,11 @@ func (a *API) handler() http.Handler {
 		respond(w, 200, map[string]bool{"ok": true, "api_key_configured": os.Getenv("OPENAI_API_KEY") != ""})
 	})
 	mux.HandleFunc("POST /api/jobs", a.create)
+	mux.HandleFunc("POST /api/jobs/{id}/approve", a.approve)
+	mux.HandleFunc("POST /api/jobs/{id}/recalculate", a.recalculate)
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", a.cancel)
+	mux.HandleFunc("GET /api/jobs/{id}/preview", a.preview)
+	mux.HandleFunc("GET /api/references", a.references)
 	mux.HandleFunc("GET /api/jobs/{id}", a.status)
 	mux.HandleFunc("GET /api/jobs/{id}/download", a.download)
 	files := http.FileServer(http.Dir(filepath.Join(a.root, "web", "dist")))
@@ -85,12 +93,12 @@ func (a *API) handler() http.Handler {
 	})
 }
 func (a *API) create(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		if r.MultipartForm != nil {
 			r.MultipartForm.RemoveAll()
 		}
-		fail(w, 400, "Upload must be a multipart request under 100 MB")
+		fail(w, 400, "Upload must be a multipart request under 500 MB")
 		return
 	}
 	defer r.MultipartForm.RemoveAll()
@@ -112,8 +120,16 @@ func (a *API) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Seconds must be between 0 and 900")
 		return
 	}
-	if mode == "audio" && (seconds == 0 || seconds > 15) {
+	if mode == "audio" && len(r.MultipartForm.File["reference"]) == 0 && r.FormValue("reference_id") == "" && (seconds == 0 || seconds > 15) {
 		seconds = 15
+	}
+	referenceSeconds := 30
+	if value := r.FormValue("reference_seconds"); value != "" {
+		referenceSeconds, err = strconv.Atoi(value)
+		if err != nil || referenceSeconds < 0 || referenceSeconds > 1800 {
+			fail(w, 400, "Reference seconds must be between 0 and 1800")
+			return
+		}
 	}
 	title, artist := strings.TrimSpace(r.FormValue("title")), strings.TrimSpace(r.FormValue("artist"))
 	if title == "" {
@@ -177,7 +193,36 @@ func (a *API) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "Cannot read audio upload")
 		return
 	}
-	request := Request{audio, filepath.Join(a.root, "references"), filepath.Join(dir, "output"), filepath.Join(dir, "result.json"), title, artist, seconds, mode, model}
+	referenceFolder := ""
+	if mode == "audio" {
+		if len(r.MultipartForm.File["reference"]) > 0 {
+			referenceFolder = filepath.Join(a.root, "user_references", id)
+			if err = os.MkdirAll(referenceFolder, 0700); err != nil {
+				fail(w, 500, "Cannot save reference")
+				return
+			}
+			if err = saveReference(r, referenceFolder); err != nil {
+				os.RemoveAll(referenceFolder)
+				fail(w, 400, err.Error())
+				return
+			}
+		} else if refID := r.FormValue("reference_id"); refID != "" {
+			if !validID(refID) {
+				fail(w, 400, "Invalid reference ID")
+				return
+			}
+			referenceFolder = filepath.Join(a.root, "user_references", refID)
+			if info, e := os.Stat(referenceFolder); e != nil || !info.IsDir() {
+				fail(w, 400, "Saved reference not found")
+				return
+			}
+		}
+	}
+	request := Request{Audio: audio, References: filepath.Join(a.root, "user_references"), Output: filepath.Join(dir, "output"), Result: filepath.Join(dir, "result.json"), Title: title, Artist: artist, Seconds: seconds, Mode: mode, Model: model, ReferenceFolder: referenceFolder, ReferenceSeconds: referenceSeconds}
+	if referenceFolder != "" {
+		request.Stage = "prepare"
+		request.Result = filepath.Join(dir, "estimate.json")
+	}
 	data, _ := json.Marshal(request)
 	requestPath := filepath.Join(dir, "request.json")
 	if err = os.WriteFile(requestPath, data, 0600); err != nil {
@@ -195,7 +240,12 @@ func (a *API) create(w http.ResponseWriter, r *http.Request) {
 func (a *API) process(id, dir, requestPath, resultPath string) {
 	defer a.wg.Done()
 	defer func() { <-a.slot }()
-	defer os.Remove(filepath.Join(dir, "input"+filepath.Ext(readAudio(requestPath))))
+	var request Request
+	requestData, _ := os.ReadFile(requestPath)
+	json.Unmarshal(requestData, &request)
+	if request.Stage != "prepare" {
+		defer os.Remove(request.Audio)
+	}
 	a.mu.Lock()
 	a.jobs[id] = Job{ID: id, Status: "running"}
 	a.mu.Unlock()
@@ -214,6 +264,18 @@ func (a *API) process(id, dir, requestPath, resultPath string) {
 		data, readErr := os.ReadFile(resultPath)
 		var report map[string]any
 		if readErr == nil && json.Unmarshal(data, &report) == nil {
+			if request.Stage == "prepare" {
+				if message, ok := report["preparation_error"].(string); ok {
+					job.Error = message
+					job.Report = report
+				} else {
+					job = Job{ID: id, Status: "awaiting_approval", Report: report}
+					a.mu.Lock()
+					a.jobs[id] = job
+					a.mu.Unlock()
+					return
+				}
+			}
 			zip, _ := report["zip_path"].(string)
 			rel, relErr := filepath.Rel(filepath.Join(dir, "output"), zip)
 			info, statErr := os.Stat(zip)

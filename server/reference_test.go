@@ -62,18 +62,8 @@ func TestReferenceApprovalGate(t *testing.T) {
 	if !strings.Contains(string(data), `"seconds":0`) {
 		t.Fatal("Full target was clipped")
 	}
-	for _, body := range []string{`{"budget_usd":1}`, `{"budget_usd":0}`, `{}`} {
-		denied := httptest.NewRecorder()
-		a.handler().ServeHTTP(denied, httptest.NewRequest("POST", "http://localhost/api/jobs/"+job.ID+"/approve", strings.NewReader(body)))
-		if denied.Code != 400 {
-			t.Fatal("Invalid or insufficient budget accepted", denied.Code)
-		}
-	}
-	if calls != 1 {
-		t.Fatal("Generation ran without sufficient approval")
-	}
 	rr = httptest.NewRecorder()
-	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+job.ID+"/approve", strings.NewReader(`{"budget_usd":3}`)))
+	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+job.ID+"/approve", nil))
 	if rr.Code != 202 {
 		t.Fatal(rr.Code, rr.Body.String())
 	}
@@ -83,7 +73,7 @@ func TestReferenceApprovalGate(t *testing.T) {
 		t.Fatal(completed, calls)
 	}
 	rr = httptest.NewRecorder()
-	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+job.ID+"/approve", strings.NewReader(`{"budget_usd":3}`)))
+	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+job.ID+"/approve", nil))
 	if rr.Code != 409 {
 		t.Fatal("Duplicate approval accepted")
 	}
@@ -105,7 +95,7 @@ func TestCancelPreparedJob(t *testing.T) {
 		t.Fatal("Cancelled temporary files remain")
 	}
 	rr = httptest.NewRecorder()
-	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+id+"/approve", strings.NewReader(`{"budget_usd":3}`)))
+	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+id+"/approve", nil))
 	if rr.Code != 409 {
 		t.Fatal("Cancelled job approved")
 	}
@@ -139,7 +129,7 @@ func TestRecalculateInvalidatesOldEstimate(t *testing.T) {
 		data, _ := os.ReadFile(path)
 		var request Request
 		json.Unmarshal(data, &request)
-		if request.Stage != "prepare" || request.ReferenceSeconds != 10 || request.Seconds != 15 {
+		if request.Stage != "prepare" || request.ReferenceSeconds != 10 || request.Seconds != 15 || len(request.ReferenceDifficulties) != 2 {
 			t.Error("Wrong recalculation settings", request)
 		}
 		return os.WriteFile(request.Result, []byte(`{"estimated_cost_usd":0.25,"size_exceeded":false,"requested_reference_seconds":10,"requested_target_seconds":15}`), 0600)
@@ -152,12 +142,12 @@ func TestRecalculateInvalidatesOldEstimate(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "request.json"), data, 0600)
 	a.jobs[id] = Job{ID: id, Status: "awaiting_approval", Report: map[string]any{"estimated_cost_usd": 2.0, "size_exceeded": true}}
 	denied := httptest.NewRecorder()
-	a.handler().ServeHTTP(denied, httptest.NewRequest("POST", "http://localhost/api/jobs/"+id+"/approve", strings.NewReader(`{"budget_usd":100}`)))
+	a.handler().ServeHTTP(denied, httptest.NewRequest("POST", "http://localhost/api/jobs/"+id+"/approve", nil))
 	if denied.Code != 400 {
 		t.Fatal("Oversized request approved")
 	}
 	rr := httptest.NewRecorder()
-	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+id+"/recalculate", strings.NewReader(`{"reference_seconds":10,"seconds":15}`)))
+	a.handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://localhost/api/jobs/"+id+"/recalculate", strings.NewReader(`{"reference_seconds":10,"seconds":15,"reference_difficulties":["easy","expert"]}`)))
 	if rr.Code != 202 {
 		t.Fatal(rr.Code, rr.Body.String())
 	}

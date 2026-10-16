@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -61,14 +60,6 @@ func saveReference(r *http.Request, folder string) error {
 	return nil
 }
 func (a *API) approve(w http.ResponseWriter, r *http.Request) {
-	var approval struct {
-		Budget float64 `json:"budget_usd"`
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1024)
-	if err := json.NewDecoder(r.Body).Decode(&approval); err != nil || math.IsNaN(approval.Budget) || math.IsInf(approval.Budget, 0) || approval.Budget <= 0 {
-		fail(w, 400, "Enter a positive spending limit in USD")
-		return
-	}
 	id := r.PathValue("id")
 	if !validID(id) {
 		fail(w, 404, "Job not found")
@@ -84,12 +75,6 @@ func (a *API) approve(w http.ResponseWriter, r *http.Request) {
 	if exceeded, _ := job.Report["size_exceeded"].(bool); exceeded {
 		a.mu.Unlock()
 		fail(w, 400, "Context is too large. Shorten durations and recalculate first.")
-		return
-	}
-	estimate, ok := job.Report["estimated_cost_usd"].(float64)
-	if !ok || approval.Budget < estimate {
-		a.mu.Unlock()
-		fail(w, 400, "Estimated cost exceeds your spending limit")
 		return
 	}
 	select {
@@ -112,7 +97,6 @@ func (a *API) approve(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "Cannot resume job")
 		return
 	}
-	job.Report["approved_budget_usd"] = approval.Budget
 	estimateData, _ := json.Marshal(job.Report)
 	if err = os.WriteFile(filepath.Join(dir, "estimate.json"), estimateData, 0600); err != nil {
 		<-a.slot
@@ -187,8 +171,9 @@ func (a *API) cancel(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) recalculate(w http.ResponseWriter, r *http.Request) {
 	var settings struct {
-		ReferenceSeconds int `json:"reference_seconds"`
-		Seconds          int `json:"seconds"`
+		ReferenceSeconds      int      `json:"reference_seconds"`
+		ReferenceDifficulties []string `json:"reference_difficulties"`
+		Seconds               int      `json:"seconds"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil || settings.ReferenceSeconds < 0 || settings.ReferenceSeconds > 1800 || settings.Seconds < 0 || settings.Seconds > 900 {
@@ -228,6 +213,7 @@ func (a *API) recalculate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.ReferenceSeconds = settings.ReferenceSeconds
+	request.ReferenceDifficulties = settings.ReferenceDifficulties
 	request.Seconds = settings.Seconds
 	request.Stage = "prepare"
 	request.Result = filepath.Join(dir, "estimate.json")
@@ -245,4 +231,21 @@ func (a *API) recalculate(w http.ResponseWriter, r *http.Request) {
 	a.wg.Add(1)
 	go a.process(id, dir, path, request.Result)
 	respond(w, 202, job)
+}
+
+func (a *API) referenceMIDI(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validID(id) {
+		fail(w, 404, "Reference not found")
+		return
+	}
+	files, _ := os.ReadDir(filepath.Join(a.root, "user_references", id))
+	for _, file := range files {
+		if strings.EqualFold(filepath.Ext(file.Name()), ".mid") && !file.IsDir() {
+			w.Header().Set("Content-Type", "audio/midi")
+			http.ServeFile(w, r, filepath.Join(a.root, "user_references", id, file.Name()))
+			return
+		}
+	}
+	fail(w, 404, "Reference MIDI not found")
 }

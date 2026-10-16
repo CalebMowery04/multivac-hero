@@ -30,18 +30,19 @@ type Job struct {
 	Zip    string         `json:"-"`
 }
 type Request struct {
-	Audio            string `json:"audio"`
-	References       string `json:"references"`
-	Output           string `json:"output"`
-	Result           string `json:"result"`
-	Title            string `json:"title"`
-	Artist           string `json:"artist"`
-	Seconds          int    `json:"seconds"`
-	Mode             string `json:"mode"`
-	Model            string `json:"model"`
-	ReferenceFolder  string `json:"reference_folder,omitempty"`
-	Stage            string `json:"stage,omitempty"`
-	ReferenceSeconds int    `json:"reference_seconds"`
+	Audio                 string   `json:"audio"`
+	References            string   `json:"references"`
+	Output                string   `json:"output"`
+	Result                string   `json:"result"`
+	Title                 string   `json:"title"`
+	Artist                string   `json:"artist"`
+	Seconds               int      `json:"seconds"`
+	Mode                  string   `json:"mode"`
+	Model                 string   `json:"model"`
+	ReferenceFolder       string   `json:"reference_folder,omitempty"`
+	Stage                 string   `json:"stage,omitempty"`
+	ReferenceSeconds      int      `json:"reference_seconds"`
+	ReferenceDifficulties []string `json:"reference_difficulties"`
 }
 type Runner func(context.Context, string) error
 type API struct {
@@ -73,8 +74,13 @@ func (a *API) handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", a.cancel)
 	mux.HandleFunc("GET /api/jobs/{id}/preview", a.preview)
 	mux.HandleFunc("GET /api/references", a.references)
+	mux.HandleFunc("GET /api/references/{id}/midi", a.referenceMIDI)
 	mux.HandleFunc("GET /api/jobs/{id}", a.status)
 	mux.HandleFunc("GET /api/jobs/{id}/download", a.download)
+	mux.HandleFunc("GET /api/jobs/{id}/chart", a.chart)
+	mux.HandleFunc("GET /api/jobs/{id}/midi", a.midi)
+	mux.HandleFunc("GET /api/jobs/{id}/ini", a.songINI)
+	mux.HandleFunc("GET /api/jobs/{id}/audio", a.songAudio)
 	files := http.FileServer(http.Dir(filepath.Join(a.root, "web", "dist")))
 	mux.Handle("/", files)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +224,7 @@ func (a *API) create(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	request := Request{Audio: audio, References: filepath.Join(a.root, "user_references"), Output: filepath.Join(dir, "output"), Result: filepath.Join(dir, "result.json"), Title: title, Artist: artist, Seconds: seconds, Mode: mode, Model: model, ReferenceFolder: referenceFolder, ReferenceSeconds: referenceSeconds}
+	request := Request{Audio: audio, References: filepath.Join(a.root, "user_references"), Output: filepath.Join(dir, "output"), Result: filepath.Join(dir, "result.json"), Title: title, Artist: artist, Seconds: seconds, Mode: mode, Model: model, ReferenceFolder: referenceFolder, ReferenceSeconds: referenceSeconds, ReferenceDifficulties: r.MultipartForm.Value["reference_difficulties"]}
 	if referenceFolder != "" {
 		request.Stage = "prepare"
 		request.Result = filepath.Join(dir, "estimate.json")

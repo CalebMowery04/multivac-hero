@@ -7,3 +7,7 @@ output/
 web/node_modules/
 web/dist/
 server/multivac-server
+
+user_references/
+
+.cache/

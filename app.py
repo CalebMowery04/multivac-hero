@@ -13,7 +13,7 @@ artist=st.text_input('Artist','Unknown')
 seconds=st.number_input('Seconds to analyze (0 = full song)',min_value=0,max_value=900,value=30,step=15)
 direct_audio = st.checkbox('Let the model listen and create the chart (experimental)', value=False)
 if direct_audio:
-    st.info('Sends up to the first 15 seconds of uploaded audio to OpenAI using gpt-audio-1.5. The model chooses timing, chords, and sustains. API charges apply; failures use the local baseline.')
+    st.info('Sends up to the first 15 seconds of uploaded audio to OpenAI using gpt-audio-1.5. Retrieved reference MIDI patterns guide playable fret choices; the model chooses timing, chords, and sustains. API charges apply; failures use the local baseline.')
 llm=st.checkbox('Use OpenAI LLM for note mapping',value=False, disabled=direct_audio)
 model = st.selectbox(
     'OpenAI model',
